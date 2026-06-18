@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>Navegación GPS Orientada</title>
+
+<link rel="stylesheet"
+href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+
+<style>
+
+html,body{
+    margin:0;
+    width:100%;
+    height:100%;
+}
+
+#map{
+    width:100%;
+    height:100%;
+}
+
+#panel{
+
+    position:absolute;
+    top:10px;
+    left:10px;
+
+    z-index:1000;
+
+    background:white;
+    padding:12px;
+
+    border-radius:10px;
+
+    font-family:Arial;
+    font-size:14px;
+
+    box-shadow:0 0 10px rgba(0,0,0,.3);
+
+    max-width:320px;
+}
+
+#compass{
+
+    display:inline-block;
+
+    font-size:24px;
+
+    transition:transform .2s linear;
+}
+
+</style>
+</head>
+
+<body>
+
+<div id="panel">
+
+<h3>Navegación</h3>
+
+<div>GPS: <span id="accuracy">-</span></div>
+
+<div>Distancia: <span id="distance">-</span></div>
+
+<div>Heading: <span id="heading">-</span></div>
+
+<div>
+Brújula:
+<span id="compass">▲</span>
+</div>
+
+<hr>
+
+<div>Ángulo relativo: <span id="relative">-</span></div>
+
+<hr>
+
+<div>X+ : <span id="axp">-</span></div>
+
+<div>X- : <span id="axn">-</span></div>
+
+<div>Y+ : <span id="ayp">-</span></div>
+
+<div>Y- : <span id="ayn">-</span></div>
+
+<p>
+Seleccione destino haciendo clic sobre el mapa.
+</p>
+
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<script>
+
+////////////////////////////////////////////////////////
+// VARIABLES
+////////////////////////////////////////////////////////
+
+const map = L.map('map').setView([0,0],18);
+
+L.tileLayer(
+'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+{
+attribution:'© OpenStreetMap'
+}
+).addTo(map);
+
+let currentLat = null;
+let currentLng = null;
+
+let destination = null;
+
+let heading = 0;
+
+let userMarker = null;
+let destinationMarker = null;
+
+let routeLine = null;
+
+let accuracyCircle = null;
+
+let axisX = null;
+let axisY = null;
+
+////////////////////////////////////////////////////////
+// HAVERSINE
+////////////////////////////////////////////////////////
+
+function haversine(lat1, lon1, lat2, lon2){
+
+const R = 6371000;
+
+const dLat =
+(lat2-lat1)*Math.PI/180;
+
+const dLon =
+(lon2-lon1)*Math.PI/180;
+
+const a =
+Math.sin(dLat/2)**2 +
+Math.cos(lat1*Math.PI/180)*
+Math.cos(lat2*Math.PI/180)*
+Math.sin(dLon/2)**2;
+
+return R *
+2 *
+Math.atan2(
+Math.sqrt(a),
+Math.sqrt(1-a)
+);
+
+}
+
+////////////////////////////////////////////////////////
+// BEARING
+////////////////////////////////////////////////////////
+
+function bearing(lat1,lon1,lat2,lon2){
+
+const φ1 = lat1*Math.PI/180;
+const φ2 = lat2*Math.PI/180;
+
+const λ1 = lon1*Math.PI/180;
+const λ2 = lon2*Math.PI/180;
+
+const y =
+Math.sin(λ2-λ1)*
+Math.cos(φ2);
+
+const x =
+Math.cos(φ1)*Math.sin(φ2)
+-
+Math.sin(φ1)*
+Math.cos(φ2)*
+Math.cos(λ2-λ1);
+
+return (
+Math.atan2(y,x)*180/Math.PI
++360
+)%360;
+
+}
+
+////////////////////////////////////////////////////////
+// DESTINATION POINT
+////////////////////////////////////////////////////////
+
+function destinationPoint(
+lat,
+lng,
+distance,
+bearingDeg
+){
+
+const R = 6378137;
+
+const brng =
+bearingDeg*Math.PI/180;
+
+const lat1 =
+lat*Math.PI/180;
+
+const lon1 =
+lng*Math.PI/180;
+
+const lat2 =
+Math.asin(
+Math.sin(lat1)*
+Math.cos(distance/R)
++
+Math.cos(lat1)*
+Math.sin(distance/R)*
+Math.cos(brng)
+);
+
+const lon2 =
+lon1 +
+Math.atan2(
+Math.sin(brng)*
+Math.sin(distance/R)*
+Math.cos(lat1),
+
+Math.cos(distance/R)
+-
+Math.sin(lat1)*
+Math.sin(lat2)
+);
+
+return{
+
+lat:lat2*180/Math.PI,
+lng:lon2*180/Math.PI
+
+};
+
+}
+
+////////////////////////////////////////////////////////
+// DIBUJAR EJES ROTADOS
+////////////////////////////////////////////////////////
+
+function drawAxes(){
+
+if(
+currentLat===null ||
+currentLng===null
+)return;
+
+const size = 15;
+
+const front =
+destinationPoint(
+currentLat,
+currentLng,
+size,
+heading
+);
+
+const back =
+destinationPoint(
+currentLat,
+currentLng,
+size,
+(heading+180)%360
+);
+
+const right =
+destinationPoint(
+currentLat,
+currentLng,
+size,
+(heading+90)%360
+);
+
+const left =
+destinationPoint(
+currentLat,
+currentLng,
+size,
+(heading+270)%360
+);
+
+if(axisX)
+map.removeLayer(axisX);
+
+if(axisY)
+map.removeLayer(axisY);
+
+axisY =
+L.polyline(
+[
+[back.lat,back.lng],
+[front.lat,front.lng]
+],
+{
+color:'green',
+weight:4
+}
+).addTo(map);
+
+axisX =
+L.polyline(
+[
+[left.lat,left.lng],
+[right.lat,right.lng]
+],
+{
+color:'red',
+weight:4
+}
+).addTo(map);
+
+}
+
+////////////////////////////////////////////////////////
+// ACTUALIZAR RUTA
+////////////////////////////////////////////////////////
+
+function updateRoute(){
+
+if(
+currentLat===null ||
+destination===null
+)return;
+
+if(routeLine)
+map.removeLayer(routeLine);
+
+routeLine =
+L.polyline(
+[
+[currentLat,currentLng],
+[destination.lat,destination.lng]
+],
+{
+color:'blue',
+weight:5
+}
+).addTo(map);
+
+const d =
+haversine(
+currentLat,
+currentLng,
+destination.lat,
+destination.lng
+);
+
+document.getElementById(
+'distance'
+).innerHTML =
+d.toFixed(2)+" m";
+
+updateAngles();
+
+}
+
+////////////////////////////////////////////////////////
+// ÁNGULOS
+////////////////////////////////////////////////////////
+
+function updateAngles(){
+
+if(
+destination===null ||
+currentLat===null
+)return;
+
+const targetBearing =
+bearing(
+currentLat,
+currentLng,
+destination.lat,
+destination.lng
+);
+
+const relative =
+(
+targetBearing
+-
+heading
++
+360
+)%360;
+
+document.getElementById(
+'relative'
+).innerHTML =
+relative.toFixed(2)+"°";
+
+document.getElementById(
+'axp'
+).innerHTML =
+relative.toFixed(2)+"°";
+
+document.getElementById(
+'axn'
+).innerHTML =
+((relative+180)%360)
+.toFixed(2)+"°";
+
+document.getElementById(
+'ayp'
+).innerHTML =
+((relative+270)%360)
+.toFixed(2)+"°";
+
+document.getElementById(
+'ayn'
+).innerHTML =
+((relative+90)%360)
+.toFixed(2)+"°";
+
+}
+
+////////////////////////////////////////////////////////
+// DESTINO
+////////////////////////////////////////////////////////
+
+map.on(
+'click',
+function(e){
+
+destination =
+e.latlng;
+
+if(destinationMarker)
+map.removeLayer(destinationMarker);
+
+destinationMarker =
+L.marker(destination)
+.addTo(map)
+.bindPopup("Destino")
+.openPopup();
+
+updateRoute();
+
+}
+);
+
+////////////////////////////////////////////////////////
+// GPS
+////////////////////////////////////////////////////////
+
+navigator.geolocation.watchPosition(
+
+function(position){
+
+currentLat =
+position.coords.latitude;
+
+currentLng =
+position.coords.longitude;
+
+const accuracy =
+position.coords.accuracy;
+
+document.getElementById(
+'accuracy'
+).innerHTML =
+accuracy.toFixed(1)
++" m";
+
+if(userMarker){
+
+userMarker.setLatLng(
+[
+currentLat,
+currentLng
+]
+);
+
+accuracyCircle.setLatLng(
+[
+currentLat,
+currentLng
+]
+);
+
+accuracyCircle.setRadius(
+accuracy
+);
+
+}else{
+
+userMarker =
+L.marker(
+[
+currentLat,
+currentLng
+]
+)
+.addTo(map)
+.bindPopup("Mi posición");
+
+accuracyCircle =
+L.circle(
+[
+currentLat,
+currentLng
+],
+{
+radius:accuracy,
+color:'cyan'
+}
+)
+.addTo(map);
+
+map.setView(
+[
+currentLat,
+currentLng
+],
+19
+);
+
+}
+
+drawAxes();
+
+updateRoute();
+
+},
+
+function(error){
+
+console.error(error);
+
+},
+
+{
+enableHighAccuracy:true,
+maximumAge:0,
+timeout:10000
+}
+
+);
+
+////////////////////////////////////////////////////////
+// ORIENTACIÓN
+////////////////////////////////////////////////////////
+
+function updateHeading(value){
+
+heading = value;
+
+document.getElementById(
+'heading'
+).innerHTML =
+heading.toFixed(1)+"°";
+
+document.getElementById(
+'compass'
+).style.transform =
+`rotate(${heading}deg)`;
+
+drawAxes();
+
+updateAngles();
+
+}
+
+if(
+window.DeviceOrientationEvent
+){
+
+window.addEventListener(
+'deviceorientationabsolute',
+function(event){
+
+if(event.alpha!=null){
+
+const h =
+(
+360-event.alpha
+)%360;
+
+updateHeading(h);
+
+}
+
+}
+);
+
+window.addEventListener(
+'deviceorientation',
+function(event){
+
+if(event.alpha!=null){
+
+const h =
+(
+360-event.alpha
+)%360;
+
+updateHeading(h);
+
+}
+
+}
+);
+
+}
+
+////////////////////////////////////////////////////////
+
+</script>
+
+</body>
+
+</html>
